@@ -43,32 +43,31 @@ cancel_wait = {}
 # ----------------
 
 def reply_message(reply_token, text, items=None):
-    try:
-        url = "https://api.line.me/v2/bot/message/reply"
+    url = "https://api.line.me/v2/bot/message/reply"
 
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {LINE_TOKEN}"
-        }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_TOKEN}"
+    }
 
-        message = {
-            "type": "text",
-            "text": text
-        }
+    message = {
+        "type": "text",
+        "text": text
+    }
 
-        if items:
-            message["quickReply"] = {"items": items}
+    if items:
+        message["quickReply"] = {"items": items}
 
-        data = {
-            "replyToken": reply_token,
-            "messages": [message]
-        }
+    data = {
+        "replyToken": reply_token,
+        "messages": [message]
+    }
 
-        requests.post(url, headers=headers, json=data, timeout=10)
+    res = requests.post(url, headers=headers, json=data)
 
-    except Exception as e:
-        print("reply_message エラー:", e)
-
+    print("===== LINE RESPONSE =====")
+    print("STATUS:", res.status_code)
+    print("BODY:", res.text)
 # ----------------
 # PUSH送信
 # ----------------
