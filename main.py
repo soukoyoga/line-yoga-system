@@ -29,7 +29,7 @@ event_sheet = client.open("ヨガ予約管理").worksheet("イベント管理")
 # LINE TOKEN
 # ----------------
 
-LINE_TOKEN = "t3CaGrZYleKjARI91O9xIlYIxtByAgWZ2SUfyIOXDadhA2OL+bWozE3/C3ARUdITv0ag2uNIoDNqkiLnlqRPi+UQ/QuJ3cnVjvsE0ILrpBAekfUbqIWzmvrn3zEEVMkztT+/Kj0ZGGv+K0ktzECOKAdB04t89/1O/w1cDnyilFU="
+LINE_TOKEN = "TEyk3qadopwyVO1Uvr+1dvN2IC7mwf3DeZaemvU1/Y360HTsrHt8C4JZ6hfHOm3Tv0ag2uNIoDNqkiLnlqRPi+UQ/QuJ3cnVjvsE0ILrpBA6R2BFV9x5W9BkDMdB5RTLBXu+vw/6WH7Jrzi4qASY1wdB04t89/1O/w1cDnyilFU="
 
 # ----------------
 # 状態管理
