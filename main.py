@@ -1,3 +1,4 @@
+from re import L
 import requests
 from flask import Flask, request
 import gspread
@@ -137,7 +138,7 @@ def show_events(reply_token):
             }
         })
 
-    reply_message(reply_token, "予約するイベントを選んでください", items)
+    push_message(user_id, "予約するイベントを選んでください", items)
 
 # ----------------
 # 予約処理
@@ -148,7 +149,7 @@ def reserve_event(user_id, name, event_id, reply_token):
     event_map = get_event_map()
 
     if event_id not in event_map:
-        reply_message(reply_token, "イベントが見つかりません")
+        push_message(user_id, "イベントが見つかりません")
         return
 
     event = event_map[event_id]
@@ -176,10 +177,9 @@ def reserve_event(user_id, name, event_id, reply_token):
         event_id,
         event["イベント名"],
         event["日付"],
-        status
-    ])
+        status ])
 
-    # 🔥ここが追加
+
     message = f"{event['イベント名']}\n{event['日付']}\n{status}"
 
     if status == "キャンセル待ち":
@@ -271,7 +271,7 @@ def cancel_menu(user_id, reply_token):
         added.add(eid)
 
     if not items:
-        reply_message(reply_token, "キャンセルできる予約がありません")
+        push_message(user_id, "キャンセルできる予約がありません")
         return
 
     cancel_wait[user_id] = True
@@ -363,7 +363,7 @@ def webhook():
         text = event["message"]["text"].strip()
         user_id = event["source"]["userId"]
         reply_token = event["replyToken"]
-
+        reply_message(reply_token, "確認中です...")
         name = get_profile(user_id)
 
         if text == "予約":
