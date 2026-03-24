@@ -16,10 +16,7 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-import json
-
-creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 client = gspread.authorize(creds)
 
 reserve_sheet = client.open("ヨガ予約管理").sheet1
@@ -43,31 +40,32 @@ cancel_wait = {}
 # ----------------
 
 def reply_message(reply_token, text, items=None):
-    url = "https://api.line.me/v2/bot/message/reply"
+    try:
+        url = "https://api.line.me/v2/bot/message/reply"
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_TOKEN}"
-    }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LINE_TOKEN}"
+        }
 
-    message = {
-        "type": "text",
-        "text": text
-    }
+        message = {
+            "type": "text",
+            "text": text
+        }
 
-    if items:
-        message["quickReply"] = {"items": items}
+        if items:
+            message["quickReply"] = {"items": items}
 
-    data = {
-        "replyToken": reply_token,
-        "messages": [message]
-    }
+        data = {
+            "replyToken": reply_token,
+            "messages": [message]
+        }
 
-    res = requests.post(url, headers=headers, json=data)
+        requests.post(url, headers=headers, json=data, timeout=10)
 
-    print("===== LINE RESPONSE =====")
-    print("STATUS:", res.status_code)
-    print("BODY:", res.text)
+    except Exception as e:
+        print("reply_message エラー:", e)
+
 # ----------------
 # PUSH送信
 # ----------------
@@ -400,5 +398,5 @@ def webhook():
 # ----------------
 
 if __name__ == "__main__":
-   port = int(os.environ.get("PORT", 5001))
-app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
