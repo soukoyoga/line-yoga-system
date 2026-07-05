@@ -1,0 +1,4 @@
+{
+  "timetree_personal_token": "ここに自分のTimeTreeパーソナルアクセストークンを貼る",
+  "calendar_id": "連携するカレンダーID（API連携時に使用）"
+}
