@@ -111,6 +111,16 @@ def available_slots(keeps: list[dict]) -> list[str]:
     return [s for s in DUMMY_SLOTS if s not in kept]
 
 
+def render_copyable_slot(slot: str) -> None:
+    """空き枠表示。copy_button 非対応環境では code ブロックにフォールバック。"""
+    st.info(f"🟢 {slot}")
+    if hasattr(st, "copy_button"):
+        st.copy_button("LINE用にコピー", slot, use_container_width=True)
+    else:
+        st.caption("下の枠をタップしてコピー")
+        st.code(slot, language=None)
+
+
 st.set_page_config(
     page_title="TimeTree調整アシスタント",
     page_icon="📅",
@@ -197,8 +207,7 @@ if not slots:
     st.info("空き枠がありません。仮押さえを解除すると戻ります。")
 else:
     for slot in slots:
-        st.info(f"🟢 {slot}")
-        st.copy_button("LINE用にコピー", slot, use_container_width=True)
+        render_copyable_slot(slot)
 
 # --- 2. 仮押さえ ---
 st.subheader("2. 提示した枠をキープ")
