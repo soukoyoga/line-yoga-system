@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 config.json
 keeps.json
+blockouts.json
 .streamlit/secrets.toml
 .DS_Store

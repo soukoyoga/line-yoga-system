@@ -14,6 +14,7 @@ import streamlit as st
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
 KEEPS_PATH = APP_DIR / "keeps.json"
+BLOCKOUTS_PATH = APP_DIR / "blockouts.json"
 
 DUMMY_SLOTS = [
     "7月6日(月) 10:00〜12:00",
@@ -81,23 +82,39 @@ def resolve_credentials() -> dict:
     }
 
 
-def load_keeps() -> list[dict]:
-    if not KEEPS_PATH.exists():
+def load_json_list(path: Path) -> list[dict]:
+    if not path.exists():
         return []
     try:
-        data = json.loads(KEEPS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
     except (json.JSONDecodeError, OSError):
         return []
 
 
-def save_keeps(keeps: list[dict]) -> None:
+def save_json_list(path: Path, items: list[dict]) -> None:
     if is_cloud_deploy():
         return
-    KEEPS_PATH.write_text(
-        json.dumps(keeps, ensure_ascii=False, indent=2),
+    path.write_text(
+        json.dumps(items, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def load_keeps() -> list[dict]:
+    return load_json_list(KEEPS_PATH)
+
+
+def save_keeps(keeps: list[dict]) -> None:
+    save_json_list(KEEPS_PATH, keeps)
+
+
+def load_blockouts() -> list[dict]:
+    return load_json_list(BLOCKOUTS_PATH)
+
+
+def save_blockouts(blockouts: list[dict]) -> None:
+    save_json_list(BLOCKOUTS_PATH, blockouts)
 
 
 def init_keeps() -> None:
@@ -106,9 +123,21 @@ def init_keeps() -> None:
     st.session_state.keeps = [] if is_cloud_deploy() else load_keeps()
 
 
-def available_slots(keeps: list[dict]) -> list[str]:
+def init_blockouts() -> None:
+    if "blockouts" in st.session_state:
+        return
+    st.session_state.blockouts = [] if is_cloud_deploy() else load_blockouts()
+
+
+def available_slots(keeps: list[dict], blockouts: list[dict]) -> list[str]:
     kept = {k["slot"] for k in keeps}
-    return [s for s in DUMMY_SLOTS if s not in kept]
+    blocked = {b["slot"] for b in blockouts}
+    return [s for s in DUMMY_SLOTS if s not in kept and s not in blocked]
+
+
+def blockable_slots(blockouts: list[dict]) -> list[str]:
+    blocked = {b["slot"] for b in blockouts}
+    return [s for s in DUMMY_SLOTS if s not in blocked]
 
 
 def render_copyable_slot(slot: str) -> None:
@@ -154,6 +183,7 @@ st.markdown(
 )
 
 init_keeps()
+init_blockouts()
 creds = resolve_credentials()
 token_ready = valid_token(creds["token"])
 cloud_mode = is_cloud_deploy()
@@ -191,7 +221,51 @@ with st.expander("TimeTree 設定"):
             st.rerun()
 
     if cloud_mode:
-        st.info("仮押さえはこの端末のセッション中だけ保持されます（ブラウザを閉じると消えます）。")
+        st.info(
+            "仮押さえ・提示しない時間は、この端末のセッション中だけ保持されます"
+            "（ブラウザを閉じると消えます）。"
+        )
+
+with st.expander("🚫 提示しない時間（プライベート）"):
+    st.caption(
+        "TimeTree に予定がなくても、実家・家族時間など"
+        "「社外には出したくない時間」をここで除外します。"
+    )
+    if st.session_state.blockouts:
+        for i, block in enumerate(st.session_state.blockouts):
+            label = block.get("reason") or "プライベート"
+            col_info, col_remove = st.columns([4, 1])
+            with col_info:
+                st.error(f"🚫 {block['slot']}\n（{label}）")
+            with col_remove:
+                if st.button("解除", key=f"unblock_{i}", use_container_width=True):
+                    st.session_state.blockouts.pop(i)
+                    save_blockouts(st.session_state.blockouts)
+                    st.session_state.flash_info = True
+                    st.session_state.flash_info_msg = "提示しない時間を解除しました。"
+                    st.rerun()
+    else:
+        st.write("除外中の時間はありません。")
+
+    hideable = blockable_slots(st.session_state.blockouts)
+    if hideable:
+        with st.form("blockout_form", clear_on_submit=True):
+            hide_slot = st.selectbox("除外する日時", hideable)
+            hide_reason = st.text_input("理由（任意）", placeholder="例：実家、家族時間")
+            hide_btn = st.form_submit_button(
+                "この時間を非表示",
+                use_container_width=True,
+            )
+            if hide_btn:
+                st.session_state.blockouts.append(
+                    {"slot": hide_slot, "reason": hide_reason.strip()}
+                )
+                save_blockouts(st.session_state.blockouts)
+                st.session_state.flash_success = True
+                st.session_state.flash_success_msg = f"🚫 「{hide_slot}」を空き枠から除外しました。"
+                st.rerun()
+    else:
+        st.info("すべての枠が除外済みです。上の「解除」で戻せます。")
 
 if st.session_state.pop("flash_success", None):
     st.balloons()
@@ -202,9 +276,12 @@ elif st.session_state.pop("flash_info", None):
 # --- 1. 空き枠 ---
 st.subheader("1. 空き枠を選んでコピー")
 
-slots = available_slots(st.session_state.keeps)
+slots = available_slots(st.session_state.keeps, st.session_state.blockouts)
 if not slots:
-    st.info("空き枠がありません。仮押さえを解除すると戻ります。")
+    st.info(
+        "空き枠がありません。"
+        "「提示しない時間」や仮押さえを解除すると戻ります。"
+    )
 else:
     for slot in slots:
         render_copyable_slot(slot)
