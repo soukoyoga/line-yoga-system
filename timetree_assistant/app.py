@@ -29,6 +29,16 @@ DUMMY_SLOTS = [
 WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 SLOT_RE = re.compile(r"\(([月火水木金土日])\)\s+(\d{2}:\d{2})〜(\d{2}:\d{2})")
 
+WEEKDAY_STYLES = {
+    "月": {"bg": "#E3F2FD", "border": "#1976D2", "badge": "#1976D2"},
+    "火": {"bg": "#FFF3E0", "border": "#EF6C00", "badge": "#EF6C00"},
+    "水": {"bg": "#E8F5E9", "border": "#2E7D32", "badge": "#2E7D32"},
+    "木": {"bg": "#F3E5F5", "border": "#7B1FA2", "badge": "#7B1FA2"},
+    "金": {"bg": "#E0F2F1", "border": "#00695C", "badge": "#00695C"},
+    "土": {"bg": "#E8EAF6", "border": "#3949AB", "badge": "#3949AB"},
+    "日": {"bg": "#FFEBEE", "border": "#C62828", "badge": "#C62828"},
+}
+
 RECURRING_PRESETS = {
     "weekend": {
         "label": "毎週土日",
@@ -171,6 +181,64 @@ def parse_slot(slot: str) -> tuple[str, str, str] | None:
     return match.group(1), match.group(2), match.group(3)
 
 
+def slot_weekday(slot: str) -> str:
+    parsed = parse_slot(slot)
+    return parsed[0] if parsed else ""
+
+
+def weekday_style(weekday: str) -> dict[str, str]:
+    return WEEKDAY_STYLES.get(
+        weekday,
+        {"bg": "#F5F5F5", "border": "#9E9E9E", "badge": "#757575"},
+    )
+
+
+def group_slots_by_weekday(slots: list[str]) -> list[tuple[str, list[str]]]:
+    buckets: dict[str, list[str]] = {day: [] for day in WEEKDAYS}
+    for slot in slots:
+        weekday = slot_weekday(slot)
+        if weekday in buckets:
+            buckets[weekday].append(slot)
+    return [(day, buckets[day]) for day in WEEKDAYS if buckets[day]]
+
+
+def render_weekday_legend(weekdays: list[str]) -> None:
+    badges = []
+    for day in weekdays:
+        style = weekday_style(day)
+        badges.append(
+            f'<span class="weekday-legend" style="background:{style["badge"]};">{day}</span>'
+        )
+    st.markdown(
+        '<div class="weekday-legend-row">' + "".join(badges) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_slot_card(slot: str) -> None:
+    weekday = slot_weekday(slot)
+    style = weekday_style(weekday)
+    st.markdown(
+        f"""
+<div class="slot-card" style="background:{style['bg']}; border-left:5px solid {style['border']};">
+  <span class="weekday-badge" style="background:{style['badge']};">{weekday}</span>
+  <span class="slot-text">{slot}</span>
+</div>
+        """.strip(),
+        unsafe_allow_html=True,
+    )
+
+
+def render_copyable_slot(slot: str) -> None:
+    """空き枠表示。曜日ごとに色分け。"""
+    render_slot_card(slot)
+    if hasattr(st, "copy_button"):
+        st.copy_button("LINE用にコピー", slot, use_container_width=True)
+    else:
+        st.caption("下の枠をタップしてコピー")
+        st.code(slot, language=None)
+
+
 def time_to_minutes(value: str) -> int:
     hour, minute = map(int, value.split(":"))
     return hour * 60 + minute
@@ -280,16 +348,6 @@ def add_recurring_rule(rule: dict) -> bool:
     return True
 
 
-def render_copyable_slot(slot: str) -> None:
-    """空き枠表示。copy_button 非対応環境では code ブロックにフォールバック。"""
-    st.info(f"🟢 {slot}")
-    if hasattr(st, "copy_button"):
-        st.copy_button("LINE用にコピー", slot, use_container_width=True)
-    else:
-        st.caption("下の枠をタップしてコピー")
-        st.code(slot, language=None)
-
-
 st.set_page_config(
     page_title="TimeTree調整アシスタント",
     page_icon="📅",
@@ -316,6 +374,44 @@ st.markdown(
     padding-top: 1.5rem;
     padding-bottom: 2rem;
     max-width: 640px;
+  }
+  .slot-card {
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    margin: 0.35rem 0 0.75rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+  }
+  .weekday-badge {
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.9rem;
+    min-width: 1.8rem;
+    height: 1.8rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .slot-text {
+    font-size: 1rem;
+    line-height: 1.4;
+    color: #212121;
+  }
+  .weekday-legend-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+  }
+  .weekday-legend {
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
   }
 </style>
 """,
@@ -502,8 +598,17 @@ if not slots:
         "「提示しない時間」・繰り返しルール・仮押さえを解除すると戻ります。"
     )
 else:
-    for slot in slots:
-        render_copyable_slot(slot)
+    grouped = group_slots_by_weekday(slots)
+    render_weekday_legend([day for day, _ in grouped])
+    for weekday, day_slots in grouped:
+        style = weekday_style(weekday)
+        st.markdown(
+            f'<p style="margin:1rem 0 0.25rem 0; font-weight:700; color:{style["badge"]};">'
+            f"■ {weekday}曜日</p>",
+            unsafe_allow_html=True,
+        )
+        for slot in day_slots:
+            render_copyable_slot(slot)
 
 # --- 2. 仮押さえ ---
 st.subheader("2. 提示した枠をキープ")
