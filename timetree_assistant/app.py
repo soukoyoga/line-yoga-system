@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -29,7 +31,21 @@ DUMMY_SLOTS = [
 ]
 
 WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
-SLOT_RE = re.compile(r"\(([月火水木金土日])\)\s+(\d{2}:\d{2})〜(\d{2}:\d{2})")
+FULL_SLOT_RE = re.compile(
+    r"(\d+)月(\d+)日\(([月火水木金土日])\)\s+(\d{2}:\d{2})〜(\d{2}:\d{2})"
+)
+SLOT_RE = FULL_SLOT_RE
+
+DURATION_PRESETS = {
+    "30分": 30,
+    "45分": 45,
+    "1時間": 60,
+    "1.5時間": 90,
+    "2時間": 120,
+}
+STEP_OPTIONS = {"30分ごと": 30, "1時間ごと": 60}
+BUFFER_OPTIONS = {"なし": 0, "15分": 15, "30分": 30}
+DAYS_AHEAD_OPTIONS = {"7日": 7, "14日": 14, "30日": 30}
 
 WEEKDAY_STYLES = {
     "月": {"bg": "#E3F2FD", "border": "#1976D2", "badge": "#1976D2"},
@@ -57,6 +73,36 @@ RECURRING_PRESETS = {
 }
 
 PLACEHOLDER_TOKENS = {"", "your_token_here", "ここにTimeTreeパーソナルアクセストークン"}
+
+
+@dataclass(frozen=True)
+class FreeWindow:
+    month: int
+    day: int
+    weekday: str
+    start: str
+    end: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.month}月{self.day}日({self.weekday})"
+
+    def to_source_string(self) -> str:
+        return f"{self.label} {self.start}〜{self.end}"
+
+    def on_date(self, year: int) -> date:
+        return date(year, self.month, self.day)
+
+
+@dataclass(frozen=True)
+class SlotSearchSettings:
+    duration_min: int
+    step_min: int
+    buffer_min: int
+    use_business_hours: bool
+    business_start: str
+    business_end: str
+    days_ahead: int
 
 
 def load_file_config() -> dict:
@@ -176,11 +222,263 @@ def init_recurring_rules() -> None:
     st.session_state.recurring_rules = [] if is_cloud_deploy() else load_recurring_rules()
 
 
+def time_to_minutes(value: str) -> int:
+    hour, minute = map(int, value.split(":"))
+    return hour * 60 + minute
+
+
+def minutes_to_time(value: int) -> str:
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
 def parse_slot(slot: str) -> tuple[str, str, str] | None:
-    match = SLOT_RE.search(slot)
+    parsed = parse_slot_full(slot)
+    if not parsed:
+        return None
+    return parsed["weekday"], parsed["start"], parsed["end"]
+
+
+def parse_slot_full(slot: str) -> dict | None:
+    match = FULL_SLOT_RE.search(slot)
     if not match:
         return None
-    return match.group(1), match.group(2), match.group(3)
+    start_min = time_to_minutes(match.group(4))
+    end_min = time_to_minutes(match.group(5))
+    return {
+        "month": int(match.group(1)),
+        "day": int(match.group(2)),
+        "weekday": match.group(3),
+        "label": f"{match.group(1)}月{match.group(2)}日({match.group(3)})",
+        "start": match.group(4),
+        "end": match.group(5),
+        "start_min": start_min,
+        "end_min": end_min,
+    }
+
+
+def parse_free_window(slot: str) -> FreeWindow | None:
+    parsed = parse_slot_full(slot)
+    if not parsed:
+        return None
+    return FreeWindow(
+        month=parsed["month"],
+        day=parsed["day"],
+        weekday=parsed["weekday"],
+        start=parsed["start"],
+        end=parsed["end"],
+    )
+
+
+def get_base_windows() -> list[FreeWindow]:
+    windows = []
+    for slot in DUMMY_SLOTS:
+        window = parse_free_window(slot)
+        if window:
+            windows.append(window)
+    return windows
+
+
+def slots_overlap(a: str, b: str) -> bool:
+    pa, pb = parse_slot_full(a), parse_slot_full(b)
+    if not pa or not pb:
+        return False
+    if pa["label"] != pb["label"]:
+        return False
+    return pa["start_min"] < pb["end_min"] and pb["start_min"] < pa["end_min"]
+
+
+def window_within_days(window: FreeWindow, days_ahead: int, today: date | None = None) -> bool:
+    today = today or date.today()
+    target = window.on_date(today.year)
+    if target < today:
+        return False
+    return target <= today + timedelta(days=days_ahead)
+
+
+def clip_window_to_business_hours(
+    window: FreeWindow,
+    business_start: str,
+    business_end: str,
+) -> FreeWindow | None:
+    start = max(time_to_minutes(window.start), time_to_minutes(business_start))
+    end = min(time_to_minutes(window.end), time_to_minutes(business_end))
+    if end <= start:
+        return None
+    return FreeWindow(
+        month=window.month,
+        day=window.day,
+        weekday=window.weekday,
+        start=minutes_to_time(start),
+        end=minutes_to_time(end),
+    )
+
+
+def generate_slots_from_window(
+    window: FreeWindow,
+    duration_min: int,
+    step_min: int,
+    buffer_min: int,
+) -> list[str]:
+    usable_start = time_to_minutes(window.start) + buffer_min
+    usable_end = time_to_minutes(window.end) - buffer_min
+    if usable_end - usable_start < duration_min:
+        return []
+
+    slots: list[str] = []
+    cursor = usable_start
+    while cursor + duration_min <= usable_end:
+        slots.append(
+            f"{window.label} {minutes_to_time(cursor)}〜{minutes_to_time(cursor + duration_min)}"
+        )
+        cursor += step_min
+    return slots
+
+
+def generate_candidate_slots(
+    windows: list[FreeWindow],
+    settings: SlotSearchSettings,
+    today: date | None = None,
+) -> list[str]:
+    today = today or date.today()
+    candidates: list[str] = []
+    for window in windows:
+        if not window_within_days(window, settings.days_ahead, today):
+            continue
+        active = window
+        if settings.use_business_hours:
+            clipped = clip_window_to_business_hours(
+                window,
+                settings.business_start,
+                settings.business_end,
+            )
+            if not clipped:
+                continue
+            active = clipped
+        candidates.extend(
+            generate_slots_from_window(
+                active,
+                settings.duration_min,
+                settings.step_min,
+                settings.buffer_min,
+            )
+        )
+    return candidates
+
+
+def init_search_settings() -> None:
+    defaults = {
+        "search_duration_preset": "1時間",
+        "search_custom_hours": 1,
+        "search_custom_minutes": 0,
+        "search_step_label": "30分ごと",
+        "search_buffer_label": "15分",
+        "search_use_business_hours": True,
+        "search_business_start": "10:00",
+        "search_business_end": "17:00",
+        "search_days_label": "14日",
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def build_search_settings() -> SlotSearchSettings:
+    preset = st.session_state.search_duration_preset
+    if preset == "カスタム":
+        duration_min = (
+            int(st.session_state.search_custom_hours) * 60
+            + int(st.session_state.search_custom_minutes)
+        )
+    else:
+        duration_min = DURATION_PRESETS[preset]
+
+    duration_min = max(duration_min, 15)
+    return SlotSearchSettings(
+        duration_min=duration_min,
+        step_min=STEP_OPTIONS[st.session_state.search_step_label],
+        buffer_min=BUFFER_OPTIONS[st.session_state.search_buffer_label],
+        use_business_hours=st.session_state.search_use_business_hours,
+        business_start=st.session_state.search_business_start,
+        business_end=st.session_state.search_business_end,
+        days_ahead=DAYS_AHEAD_OPTIONS[st.session_state.search_days_label],
+    )
+
+
+def render_search_settings_panel() -> SlotSearchSettings:
+    init_search_settings()
+    with st.expander("🔍 空き枠の探し方", expanded=True):
+        st.caption("所要時間に合う候補を、空き時間から自動で切り出します。")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.search_duration_preset = st.selectbox(
+                "所要時間",
+                list(DURATION_PRESETS.keys()) + ["カスタム"],
+                index=(
+                    list(DURATION_PRESETS.keys()) + ["カスタム"]
+                ).index(st.session_state.search_duration_preset),
+            )
+        with col2:
+            st.session_state.search_step_label = st.selectbox(
+                "開始刻み",
+                list(STEP_OPTIONS.keys()),
+                index=list(STEP_OPTIONS.keys()).index(
+                    st.session_state.search_step_label
+                ),
+            )
+
+        if st.session_state.search_duration_preset == "カスタム":
+            custom_col1, custom_col2 = st.columns(2)
+            with custom_col1:
+                st.session_state.search_custom_hours = st.number_input(
+                    "時間",
+                    min_value=0,
+                    max_value=8,
+                    value=int(st.session_state.search_custom_hours),
+                )
+            with custom_col2:
+                st.session_state.search_custom_minutes = st.selectbox(
+                    "分",
+                    [0, 15, 30, 45],
+                    index=[0, 15, 30, 45].index(
+                        int(st.session_state.search_custom_minutes)
+                    ),
+                )
+
+        col3, col4 = st.columns(2)
+        with col3:
+            st.session_state.search_buffer_label = st.selectbox(
+                "前後のバッファ",
+                list(BUFFER_OPTIONS.keys()),
+                index=list(BUFFER_OPTIONS.keys()).index(
+                    st.session_state.search_buffer_label
+                ),
+            )
+        with col4:
+            st.session_state.search_days_label = st.selectbox(
+                "何日先まで",
+                list(DAYS_AHEAD_OPTIONS.keys()),
+                index=list(DAYS_AHEAD_OPTIONS.keys()).index(
+                    st.session_state.search_days_label
+                ),
+            )
+
+        st.session_state.search_use_business_hours = st.checkbox(
+            "営業時間内だけ探す",
+            value=st.session_state.search_use_business_hours,
+        )
+        if st.session_state.search_use_business_hours:
+            biz_col1, biz_col2 = st.columns(2)
+            with biz_col1:
+                st.session_state.search_business_start = st.text_input(
+                    "営業開始",
+                    value=st.session_state.search_business_start,
+                )
+            with biz_col2:
+                st.session_state.search_business_end = st.text_input(
+                    "営業終了",
+                    value=st.session_state.search_business_end,
+                )
+
+    return build_search_settings()
 
 
 def slot_weekday(slot: str) -> str:
@@ -379,11 +677,6 @@ def render_line_message_composer(slots: list[str]) -> None:
             st.rerun()
 
 
-def time_to_minutes(value: str) -> int:
-    hour, minute = map(int, value.split(":"))
-    return hour * 60 + minute
-
-
 def times_overlap(slot_start: str, slot_end: str, rule_start: str, rule_end: str) -> bool:
     start_slot = time_to_minutes(slot_start)
     end_slot = time_to_minutes(slot_end)
@@ -445,9 +738,9 @@ def is_slot_available(
     blockouts: list[dict],
     recurring_rules: list[dict],
 ) -> bool:
-    if any(keep["slot"] == slot for keep in keeps):
+    if any(slots_overlap(slot, keep["slot"]) for keep in keeps):
         return False
-    if any(blockout["slot"] == slot for blockout in blockouts):
+    if any(slots_overlap(slot, blockout["slot"]) for blockout in blockouts):
         return False
     if slot_blocked_by_recurring(slot, recurring_rules):
         return False
@@ -458,10 +751,12 @@ def available_slots(
     keeps: list[dict],
     blockouts: list[dict],
     recurring_rules: list[dict],
+    settings: SlotSearchSettings,
 ) -> list[str]:
+    candidates = generate_candidate_slots(get_base_windows(), settings)
     return [
         slot
-        for slot in DUMMY_SLOTS
+        for slot in candidates
         if is_slot_available(slot, keeps, blockouts, recurring_rules)
     ]
 
@@ -471,10 +766,10 @@ def blockable_slots(
     recurring_rules: list[dict],
 ) -> list[str]:
     return [
-        slot
-        for slot in DUMMY_SLOTS
-        if not any(blockout["slot"] == slot for blockout in blockouts)
-        and not slot_blocked_by_recurring(slot, recurring_rules)
+        window.to_source_string()
+        for window in get_base_windows()
+        if not any(slots_overlap(window.to_source_string(), b["slot"]) for b in blockouts)
+        and not slot_blocked_by_recurring(window.to_source_string(), recurring_rules)
     ]
 
 
@@ -728,15 +1023,30 @@ elif st.session_state.pop("flash_info", None):
 # --- 1. 空き枠 ---
 st.subheader("1. 空き枠を選んでコピー")
 
+search_settings = render_search_settings_panel()
+settings_summary = (
+    f"条件: {search_settings.duration_min}分枠 / "
+    f"{search_settings.step_min}分刻み / "
+    f"バッファ{search_settings.buffer_min}分 / "
+    f"{search_settings.days_ahead}日先まで"
+)
+if search_settings.use_business_hours:
+    settings_summary += (
+        f" / 営業時間 {search_settings.business_start}〜{search_settings.business_end}"
+    )
+st.caption(settings_summary)
+
 slots = available_slots(
     st.session_state.keeps,
     st.session_state.blockouts,
     st.session_state.recurring_rules,
+    search_settings,
 )
 if not slots:
     st.info(
-        "空き枠がありません。"
-        "「提示しない時間」・繰り返しルール・仮押さえを解除すると戻ります。"
+        "条件に合う空き枠がありません。"
+        "所要時間・営業時間・バッファを変えるか、"
+        "「提示しない時間」・繰り返しルール・仮押さえを解除してください。"
     )
 else:
     render_line_message_composer(slots)
@@ -772,8 +1082,8 @@ else:
             name = keep_name.strip()
             if not name:
                 st.error("お名前を入力してください。")
-            elif any(k["slot"] == keep_slot for k in st.session_state.keeps):
-                st.error("その枠はすでに仮押さえされています。")
+            elif any(slots_overlap(keep_slot, k["slot"]) for k in st.session_state.keeps):
+                st.error("その時間帯はすでに仮押さえされています。")
             else:
                 st.session_state.keeps.append({"name": name, "slot": keep_slot})
                 save_keeps(st.session_state.keeps)
