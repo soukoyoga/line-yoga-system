@@ -18,6 +18,8 @@ CONFIG_PATH = APP_DIR / "config.json"
 KEEPS_PATH = APP_DIR / "keeps.json"
 BLOCKOUTS_PATH = APP_DIR / "blockouts.json"
 RECURRING_RULES_PATH = APP_DIR / "recurring_rules.json"
+LINE_TEMPLATE_PATH = APP_DIR / "line_template.json"
+SLOTS_PLACEHOLDER = "{slots}"
 
 DUMMY_SLOTS = [
     "7月6日(月) 10:00〜12:00",
@@ -235,16 +237,88 @@ def render_copyable_slot(slot: str) -> None:
     render_copy_action("LINE用にコピー", slot)
 
 
+DEFAULT_LINE_TEMPLATE = (
+    "お世話になっております。\n"
+    "ご都合いかがでしょうか。以下の日程でご検討いただけますと幸いです。\n\n"
+    f"{SLOTS_PLACEHOLDER}\n\n"
+    "よろしくお願いいたします。"
+)
+
+
+def format_slots_block(slots: list[str]) -> str:
+    return "\n".join(f"・{slot}" for slot in slots)
+
+
+def build_message_from_template(template: str, slots: list[str]) -> str:
+    if SLOTS_PLACEHOLDER in template:
+        return template.replace(SLOTS_PLACEHOLDER, format_slots_block(slots))
+    return template
+
+
 def build_bulk_line_message(slots: list[str]) -> str:
     if not slots:
         return ""
-    lines = "\n".join(f"・{slot}" for slot in slots)
-    return (
-        "お世話になっております。\n"
-        "ご都合いかがでしょうか。以下の日程でご検討いただけますと幸いです。\n\n"
-        f"{lines}\n\n"
-        "よろしくお願いいたします。"
+    return build_message_from_template(DEFAULT_LINE_TEMPLATE, slots)
+
+
+def load_line_template_file() -> str | None:
+    if not LINE_TEMPLATE_PATH.exists():
+        return None
+    try:
+        data = json.loads(LINE_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        template = (data.get("template") or "").strip()
+        return template or None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_line_template_file(template: str | None) -> None:
+    if is_cloud_deploy():
+        return
+    if not template:
+        if LINE_TEMPLATE_PATH.exists():
+            LINE_TEMPLATE_PATH.unlink()
+        return
+    LINE_TEMPLATE_PATH.write_text(
+        json.dumps({"template": template}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
+
+
+def init_line_template() -> None:
+    if "saved_line_template" in st.session_state:
+        return
+    st.session_state.saved_line_template = (
+        None if is_cloud_deploy() else load_line_template_file()
+    )
+
+
+def get_saved_template() -> str | None:
+    return st.session_state.get("saved_line_template")
+
+
+def save_user_template(template: str) -> None:
+    st.session_state.saved_line_template = template
+    save_line_template_file(template)
+
+
+def clear_user_template() -> None:
+    st.session_state.saved_line_template = None
+    save_line_template_file(None)
+
+
+def extract_template_from_message(message: str, slots: list[str]) -> str:
+    block = format_slots_block(slots)
+    if block and block in message:
+        return message.replace(block, SLOTS_PLACEHOLDER, 1)
+    return message.strip()
+
+
+def compose_line_message(slots: list[str]) -> str:
+    template = get_saved_template()
+    if template:
+        return build_message_from_template(template, slots)
+    return build_bulk_line_message(slots)
 
 
 def render_copy_action(label: str, text: str) -> None:
@@ -256,20 +330,18 @@ def render_copy_action(label: str, text: str) -> None:
 
 
 def sync_line_draft(slots: list[str]) -> tuple[str, str]:
-    """空き枠が変わったら送信文ドラフトを更新する。"""
+    """保存済みの言い回しがあればそれを使い、空き枠だけ差し替える。"""
     default = build_bulk_line_message(slots)
-    slots_key = "|".join(slots)
-    if st.session_state.get("line_slots_key") != slots_key:
-        st.session_state.line_slots_key = slots_key
-        st.session_state.line_compose_text = default
-        st.session_state.line_compose_editing = False
-    return default, st.session_state.get("line_compose_text", default)
+    text = compose_line_message(slots)
+    return default, text
 
 
 def render_line_message_composer(slots: list[str]) -> None:
     """まとめて送る LINE 文面。編集してからコピーできる。"""
     default, text = sync_line_draft(slots)
     st.markdown("**LINE用にまとめて送る**")
+    if get_saved_template():
+        st.caption("保存した言い回しを使用中です。空き枠だけ自動で差し替わります。")
 
     if st.session_state.get("line_compose_editing"):
         edited = st.text_area(
@@ -277,20 +349,20 @@ def render_line_message_composer(slots: list[str]) -> None:
             value=text,
             height=220,
             key="line_compose_editor",
-            help="自分の言い回しに直してからコピーできます。",
+            help="編集完了を押すと、この言い回しが保存されます。",
         )
-        st.session_state.line_compose_text = edited
 
         col_copy, col_done, col_reset = st.columns(3)
         with col_copy:
             render_copy_action("編集した文面をコピー", edited)
         with col_done:
             if st.button("編集完了", use_container_width=True):
+                save_user_template(extract_template_from_message(edited, slots))
                 st.session_state.line_compose_editing = False
                 st.rerun()
         with col_reset:
             if st.button("定型文に戻す", use_container_width=True):
-                st.session_state.line_compose_text = default
+                clear_user_template()
                 st.session_state.line_compose_editing = False
                 st.rerun()
         return
@@ -303,7 +375,7 @@ def render_line_message_composer(slots: list[str]) -> None:
             st.rerun()
     with col_reset:
         if st.button("定型文に戻す", use_container_width=True):
-            st.session_state.line_compose_text = default
+            clear_user_template()
             st.rerun()
 
 
@@ -489,6 +561,7 @@ st.markdown(
 init_keeps()
 init_blockouts()
 init_recurring_rules()
+init_line_template()
 creds = resolve_credentials()
 token_ready = valid_token(creds["token"])
 cloud_mode = is_cloud_deploy()
