@@ -235,14 +235,6 @@ def render_copyable_slot(slot: str) -> None:
     render_copy_action("LINE用にコピー", slot)
 
 
-def render_copy_action(label: str, text: str) -> None:
-    if hasattr(st, "copy_button"):
-        st.copy_button(label, text, use_container_width=True)
-    else:
-        st.caption("下の枠をタップしてコピー")
-        st.code(text, language=None)
-
-
 def build_bulk_line_message(slots: list[str]) -> str:
     if not slots:
         return ""
@@ -253,6 +245,66 @@ def build_bulk_line_message(slots: list[str]) -> str:
         f"{lines}\n\n"
         "よろしくお願いいたします。"
     )
+
+
+def render_copy_action(label: str, text: str) -> None:
+    if hasattr(st, "copy_button"):
+        st.copy_button(label, text, use_container_width=True)
+    else:
+        st.caption("下の枠をタップしてコピー")
+        st.code(text, language=None)
+
+
+def sync_line_draft(slots: list[str]) -> tuple[str, str]:
+    """空き枠が変わったら送信文ドラフトを更新する。"""
+    default = build_bulk_line_message(slots)
+    slots_key = "|".join(slots)
+    if st.session_state.get("line_slots_key") != slots_key:
+        st.session_state.line_slots_key = slots_key
+        st.session_state.line_compose_text = default
+        st.session_state.line_compose_editing = False
+    return default, st.session_state.get("line_compose_text", default)
+
+
+def render_line_message_composer(slots: list[str]) -> None:
+    """まとめて送る LINE 文面。編集してからコピーできる。"""
+    default, text = sync_line_draft(slots)
+    st.markdown("**LINE用にまとめて送る**")
+
+    if st.session_state.get("line_compose_editing"):
+        edited = st.text_area(
+            "送信文を編集",
+            value=text,
+            height=220,
+            key="line_compose_editor",
+            help="自分の言い回しに直してからコピーできます。",
+        )
+        st.session_state.line_compose_text = edited
+
+        col_copy, col_done, col_reset = st.columns(3)
+        with col_copy:
+            render_copy_action("編集した文面をコピー", edited)
+        with col_done:
+            if st.button("編集完了", use_container_width=True):
+                st.session_state.line_compose_editing = False
+                st.rerun()
+        with col_reset:
+            if st.button("定型文に戻す", use_container_width=True):
+                st.session_state.line_compose_text = default
+                st.session_state.line_compose_editing = False
+                st.rerun()
+        return
+
+    render_copy_action("候補をまとめてコピー", text)
+    col_edit, col_reset = st.columns(2)
+    with col_edit:
+        if st.button("✏️ 送信文を編集", use_container_width=True):
+            st.session_state.line_compose_editing = True
+            st.rerun()
+    with col_reset:
+        if st.button("定型文に戻す", use_container_width=True):
+            st.session_state.line_compose_text = default
+            st.rerun()
 
 
 def time_to_minutes(value: str) -> int:
@@ -614,11 +666,7 @@ if not slots:
         "「提示しない時間」・繰り返しルール・仮押さえを解除すると戻ります。"
     )
 else:
-    line_message = build_bulk_line_message(slots)
-    st.markdown("**LINE用にまとめて送る**")
-    render_copy_action("候補をまとめてコピー（定型文付き）", line_message)
-    with st.expander("送信文のプレビュー"):
-        st.text(line_message)
+    render_line_message_composer(slots)
     st.divider()
 
     grouped = group_slots_by_weekday(slots)
