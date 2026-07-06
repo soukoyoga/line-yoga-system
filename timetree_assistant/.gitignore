@@ -4,5 +4,6 @@ __pycache__/
 config.json
 keeps.json
 blockouts.json
+recurring_rules.json
 .streamlit/secrets.toml
 .DS_Store
