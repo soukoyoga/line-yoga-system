@@ -232,11 +232,27 @@ def render_slot_card(slot: str) -> None:
 def render_copyable_slot(slot: str) -> None:
     """空き枠表示。曜日ごとに色分け。"""
     render_slot_card(slot)
+    render_copy_action("LINE用にコピー", slot)
+
+
+def render_copy_action(label: str, text: str) -> None:
     if hasattr(st, "copy_button"):
-        st.copy_button("LINE用にコピー", slot, use_container_width=True)
+        st.copy_button(label, text, use_container_width=True)
     else:
         st.caption("下の枠をタップしてコピー")
-        st.code(slot, language=None)
+        st.code(text, language=None)
+
+
+def build_bulk_line_message(slots: list[str]) -> str:
+    if not slots:
+        return ""
+    lines = "\n".join(f"・{slot}" for slot in slots)
+    return (
+        "お世話になっております。\n"
+        "ご都合いかがでしょうか。以下の日程でご検討いただけますと幸いです。\n\n"
+        f"{lines}\n\n"
+        "よろしくお願いいたします。"
+    )
 
 
 def time_to_minutes(value: str) -> int:
@@ -598,6 +614,13 @@ if not slots:
         "「提示しない時間」・繰り返しルール・仮押さえを解除すると戻ります。"
     )
 else:
+    line_message = build_bulk_line_message(slots)
+    st.markdown("**LINE用にまとめて送る**")
+    render_copy_action("候補をまとめてコピー（定型文付き）", line_message)
+    with st.expander("送信文のプレビュー"):
+        st.text(line_message)
+    st.divider()
+
     grouped = group_slots_by_weekday(slots)
     render_weekday_legend([day for day, _ in grouped])
     for weekday, day_slots in grouped:
@@ -647,15 +670,40 @@ if not st.session_state.keeps:
 else:
     for i, keep in enumerate(st.session_state.keeps):
         st.warning(f"⏳ {keep['name']}\n{keep['slot']}")
+
+        if st.session_state.get("pending_confirm_index") == i:
+            st.error(
+                f"**登録の最終確認**\n\n"
+                f"相手: **{keep['name']}**\n\n"
+                f"日時: **{keep['slot']}**\n\n"
+                f"TimeTree に登録します。（本番想定）"
+            )
+            col_ok, col_back = st.columns(2)
+            with col_ok:
+                if st.button(
+                    "登録する",
+                    key=f"confirm_yes_{i}",
+                    use_container_width=True,
+                    type="primary",
+                ):
+                    done = st.session_state.keeps.pop(i)
+                    save_keeps(st.session_state.keeps)
+                    st.session_state.pending_confirm_index = None
+                    st.session_state.flash_success = True
+                    st.session_state.flash_success_msg = (
+                        f"🎉 【{done['name']}】{done['slot']} を TimeTree に登録しました！（本番想定）"
+                    )
+                    st.rerun()
+            with col_back:
+                if st.button("戻る", key=f"confirm_no_{i}", use_container_width=True):
+                    st.session_state.pending_confirm_index = None
+                    st.rerun()
+            continue
+
         col_ok, col_cancel = st.columns(2)
         with col_ok:
             if st.button("確定", key=f"confirm_{i}", use_container_width=True, type="primary"):
-                done = st.session_state.keeps.pop(i)
-                save_keeps(st.session_state.keeps)
-                st.session_state.flash_success = True
-                st.session_state.flash_success_msg = (
-                    f"🎉 【{done['name']}】{done['slot']} を TimeTree に登録しました！（本番想定）"
-                )
+                st.session_state.pending_confirm_index = i
                 st.rerun()
         with col_cancel:
             if st.button("解除", key=f"cancel_{i}", use_container_width=True):
