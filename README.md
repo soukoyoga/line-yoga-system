@@ -18,6 +18,8 @@ streamlit run app.py
 ```
 
 クラウド公開手順: `timetree_assistant/DEPLOY.md`  
+使い方ガイド: `timetree_assistant/MANUAL.md`  
+スプレッドシート連携: `timetree_assistant/SHEETS_SETUP.md`  
 詳細: `timetree_assistant/README.md`
 
 ### `folder_rotator/` — フォルダ自動仕分けツール（課題用）

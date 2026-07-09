@@ -6,5 +6,6 @@ keeps.json
 blockouts.json
 recurring_rules.json
 line_template.json
+search_settings.json
 .streamlit/secrets.toml
 .DS_Store

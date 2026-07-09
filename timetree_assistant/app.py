@@ -15,12 +15,16 @@ from pathlib import Path
 
 import streamlit as st
 
+from storage import (
+    init_persistence,
+    persist_session,
+    sheets_configured,
+    storage_status_label,
+)
+
 APP_DIR = Path(__file__).resolve().parent
+MANUAL_PATH = APP_DIR / "MANUAL.md"
 CONFIG_PATH = APP_DIR / "config.json"
-KEEPS_PATH = APP_DIR / "keeps.json"
-BLOCKOUTS_PATH = APP_DIR / "blockouts.json"
-RECURRING_RULES_PATH = APP_DIR / "recurring_rules.json"
-LINE_TEMPLATE_PATH = APP_DIR / "line_template.json"
 SLOTS_PLACEHOLDER = "{slots}"
 
 DUMMY_SLOTS = [
@@ -161,65 +165,49 @@ def resolve_credentials() -> dict:
     }
 
 
-def load_json_list(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def save_json_list(path: Path, items: list[dict]) -> None:
-    if is_cloud_deploy():
-        return
-    path.write_text(
-        json.dumps(items, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def load_keeps() -> list[dict]:
-    return load_json_list(KEEPS_PATH)
-
-
 def save_keeps(keeps: list[dict]) -> None:
-    save_json_list(KEEPS_PATH, keeps)
-
-
-def load_blockouts() -> list[dict]:
-    return load_json_list(BLOCKOUTS_PATH)
+    st.session_state.keeps = keeps
+    persist_session()
 
 
 def save_blockouts(blockouts: list[dict]) -> None:
-    save_json_list(BLOCKOUTS_PATH, blockouts)
-
-
-def load_recurring_rules() -> list[dict]:
-    return load_json_list(RECURRING_RULES_PATH)
+    st.session_state.blockouts = blockouts
+    persist_session()
 
 
 def save_recurring_rules(rules: list[dict]) -> None:
-    save_json_list(RECURRING_RULES_PATH, rules)
+    st.session_state.recurring_rules = rules
+    persist_session()
 
 
-def init_keeps() -> None:
-    if "keeps" in st.session_state:
-        return
-    st.session_state.keeps = [] if is_cloud_deploy() else load_keeps()
+def format_keep_wait_status(keep: dict) -> tuple[str, bool]:
+    created_at = keep.get("created_at")
+    if not created_at:
+        return "返事待ち", False
+    try:
+        kept_at = datetime.fromisoformat(created_at)
+    except ValueError:
+        return "返事待ち", False
+    days = (datetime.now() - kept_at).days
+    if days <= 0:
+        return "今日キープ", False
+    if days == 1:
+        return "昨日キープ", False
+    return f"{days}日前にキープ", days >= 3
 
 
-def init_blockouts() -> None:
-    if "blockouts" in st.session_state:
-        return
-    st.session_state.blockouts = [] if is_cloud_deploy() else load_blockouts()
+def new_keep(name: str, slot: str) -> dict:
+    return {
+        "name": name,
+        "slot": slot,
+        "created_at": datetime.now().replace(second=0, microsecond=0).isoformat(),
+    }
 
 
-def init_recurring_rules() -> None:
-    if "recurring_rules" in st.session_state:
-        return
-    st.session_state.recurring_rules = [] if is_cloud_deploy() else load_recurring_rules()
+def load_manual_text() -> str:
+    if MANUAL_PATH.exists():
+        return MANUAL_PATH.read_text(encoding="utf-8")
+    return "使い方ファイル（MANUAL.md）が見つかりません。"
 
 
 def time_to_minutes(value: str) -> int:
@@ -478,7 +466,9 @@ def render_search_settings_panel() -> SlotSearchSettings:
                     value=st.session_state.search_business_end,
                 )
 
-    return build_search_settings()
+    settings = build_search_settings()
+    persist_session()
+    return settings
 
 
 def slot_weekday(slot: str) -> str:
@@ -559,50 +549,18 @@ def build_bulk_line_message(slots: list[str]) -> str:
     return build_message_from_template(DEFAULT_LINE_TEMPLATE, slots)
 
 
-def load_line_template_file() -> str | None:
-    if not LINE_TEMPLATE_PATH.exists():
-        return None
-    try:
-        data = json.loads(LINE_TEMPLATE_PATH.read_text(encoding="utf-8"))
-        template = (data.get("template") or "").strip()
-        return template or None
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def save_line_template_file(template: str | None) -> None:
-    if is_cloud_deploy():
-        return
-    if not template:
-        if LINE_TEMPLATE_PATH.exists():
-            LINE_TEMPLATE_PATH.unlink()
-        return
-    LINE_TEMPLATE_PATH.write_text(
-        json.dumps({"template": template}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def init_line_template() -> None:
-    if "saved_line_template" in st.session_state:
-        return
-    st.session_state.saved_line_template = (
-        None if is_cloud_deploy() else load_line_template_file()
-    )
-
-
 def get_saved_template() -> str | None:
     return st.session_state.get("saved_line_template")
 
 
 def save_user_template(template: str) -> None:
     st.session_state.saved_line_template = template
-    save_line_template_file(template)
+    persist_session()
 
 
 def clear_user_template() -> None:
     st.session_state.saved_line_template = None
-    save_line_template_file(None)
+    persist_session()
 
 
 def extract_template_from_message(message: str, slots: list[str]) -> str:
@@ -853,16 +811,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-init_keeps()
-init_blockouts()
-init_recurring_rules()
-init_line_template()
+init_persistence()
+init_search_settings()
 creds = resolve_credentials()
 token_ready = valid_token(creds["token"])
 cloud_mode = is_cloud_deploy()
 
 st.title("📱 日程調整アシスタント")
 st.write("LINEの横に置いて使う、スケジュール管理ツール")
+st.caption(f"💾 {storage_status_label()}")
+
+if st.session_state.get("_storage_error"):
+    st.warning(st.session_state["_storage_error"])
 
 if cloud_mode:
     st.caption("🌐 クラウド版 — どこからでも利用できます")
@@ -894,10 +854,13 @@ with st.expander("TimeTree 設定"):
             st.rerun()
 
     if cloud_mode:
-        st.info(
-            "仮押さえ・提示しない時間・繰り返しルールは、この端末のセッション中だけ保持されます"
-            "（ブラウザを閉じると消えます）。"
-        )
+        if sheets_configured():
+            st.info("仮押さえ・除外ルール・送信文はスプレッドシートに保存されます。")
+        else:
+            st.info(
+                "仮押さえ・除外ルールはこの端末のセッション中だけ保持されます。"
+                "永続保存するにはスプレッドシート連携を設定してください（使い方参照）。"
+            )
 
 with st.expander("🚫 提示しない時間（プライベート）"):
     st.caption(
@@ -1085,7 +1048,7 @@ else:
             elif any(slots_overlap(keep_slot, k["slot"]) for k in st.session_state.keeps):
                 st.error("その時間帯はすでに仮押さえされています。")
             else:
-                st.session_state.keeps.append({"name": name, "slot": keep_slot})
+                st.session_state.keeps.append(new_keep(name, keep_slot))
                 save_keeps(st.session_state.keeps)
                 st.session_state.flash_success = True
                 st.session_state.flash_success_msg = (
@@ -1100,7 +1063,11 @@ if not st.session_state.keeps:
     st.write("現在、仮押さえはありません。")
 else:
     for i, keep in enumerate(st.session_state.keeps):
-        st.warning(f"⏳ {keep['name']}\n{keep['slot']}")
+        wait_label, urgent = format_keep_wait_status(keep)
+        if urgent:
+            st.error(f"⏳ {keep['name']}\n{keep['slot']}\n📅 {wait_label}")
+        else:
+            st.warning(f"⏳ {keep['name']}\n{keep['slot']}\n📅 {wait_label}")
 
         if st.session_state.get("pending_confirm_index") == i:
             st.error(
@@ -1143,6 +1110,9 @@ else:
                 st.session_state.flash_info = True
                 st.session_state.flash_info_msg = "仮押さえを解除しました。"
                 st.rerun()
+
+with st.expander("📖 使い方ガイド"):
+    st.markdown(load_manual_text())
 
 with st.expander("公開・渡し方"):
     st.markdown(
